@@ -1,0 +1,82 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  # Oldest Jellyfin server version this build supports.
+  TARGET_ABI: "12.3.0.0"
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Work out version
+        run: |
+          # v1.2.3 -> 1.2.3.0 (Jellyfin needs four parts)
+          TAG="${GITHUB_REF_NAME#v}"
+          VERSION=$(echo "$TAG" | awk -F. '{ printf "%s.%s.%s.%s", $1, $2, $3, ($4 == "" ? 0 : $4) }')
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Test
+        run: dotnet test --project tests/Jellyfin.Plugin.SearchAccelerator.Tests.csproj
+
+      - name: Build
+        run: |
+          dotnet publish src/Jellyfin.Plugin.SearchAccelerator.csproj \
+            --configuration Release \
+            --output dist/ \
+            -p:Version="$VERSION"
+
+      - name: Package
+        run: |
+          ZIP="Jellyfin.Plugin.SearchAccelerator_${VERSION}.zip"
+          (cd dist && zip -j "../$ZIP" Jellyfin.Plugin.SearchAccelerator.dll)
+          echo "ZIP=$ZIP" >> "$GITHUB_ENV"
+          echo "CHECKSUM=$(md5sum "$ZIP" | cut -d' ' -f1 | tr 'a-z' 'A-Z')" >> "$GITHUB_ENV"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ZIP }}
+          generate_release_notes: true
+
+      - name: Add this version to manifest.json
+        run: |
+          git fetch origin main
+          git checkout main
+          jq \
+            --arg version "$VERSION" \
+            --arg abi "$TARGET_ABI" \
+            --arg checksum "$CHECKSUM" \
+            --arg url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${ZIP}" \
+            --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '.[0].versions = [{
+                version: $version,
+                changelog: "See the GitHub release notes.",
+                targetAbi: $abi,
+                sourceUrl: $url,
+                checksum: $checksum,
+                timestamp: $timestamp
+              }] + .[0].versions' \
+            manifest.json > manifest.tmp
+          mv manifest.tmp manifest.json
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add manifest.json
+          git commit -m "Add ${GITHUB_REF_NAME} to manifest"
+          git push origin main

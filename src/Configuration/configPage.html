@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Search Accelerator</title>
+</head>
+<body>
+<div id="SearchAcceleratorConfigPage" data-role="page" class="page type-interior pluginConfigurationPage"
+     data-require="emby-input,emby-button,emby-checkbox">
+    <div data-role="content">
+        <div class="content-primary">
+            <form id="SearchAcceleratorConfigForm">
+                <p class="fieldDescription">
+                    Needs an external search provider, such as the Meilisearch plugin. Without one, Jellyfin searches
+                    as normal. Changes apply immediately; no restart needed.
+                </p>
+
+                <fieldset class="verticalSection">
+                    <legend><h3 class="sectionTitle">Search</h3></legend>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="Enabled" type="checkbox" is="emby-checkbox" />
+                            <span>Use the external search provider first</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">
+                            Master switch. Jellyfin normally waits for its own, slower database search even when the external
+                            provider has already answered. When on, Jellyfin's search only runs if the provider can't answer.
+                            When off, Jellyfin searches as normal.
+                        </div>
+                    </div>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="TrustEmptyExternalResults" type="checkbox" is="emby-checkbox" />
+                            <span>Trust "no results" from the external provider</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">
+                            A search that finds nothing returns immediately instead of running Jellyfin's database search.
+                            This is what makes empty searches (such as the Videos row) fast. The provider is checked against a
+                            known item first, so if it's down or its index is empty, Jellyfin's search is used instead. Turn
+                            this off if the provider's index is often out of date.
+                        </div>
+                    </div>
+
+                    <div class="inputContainer">
+                        <input id="ExternalTimeoutMilliseconds" type="number" is="emby-input" min="50" max="60000" step="50"
+                               label="External provider timeout (ms)" />
+                        <div class="fieldDescription">
+                            If the provider takes longer than this, Jellyfin's search answers instead. Default 1500.
+                        </div>
+                    </div>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="AcceleratePeopleSearch" type="checkbox" is="emby-checkbox" />
+                            <span>Search people with the external provider</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">
+                            Jellyfin's People search never uses search providers. When on, it does. Users with library or
+                            parental restrictions keep Jellyfin's own People search, which checks what they're allowed to see.
+                        </div>
+                    </div>
+                </fieldset>
+
+                <fieldset class="verticalSection">
+                    <legend><h3 class="sectionTitle">Troubleshooting</h3></legend>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="DebugLogging" type="checkbox" is="emby-checkbox" />
+                            <span>Log every search</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">
+                            Logs which search answered each query (external or Jellyfin's) and how long it took.
+                        </div>
+                    </div>
+                </fieldset>
+
+                <br />
+                <button is="emby-button" type="submit" class="raised button-submit block emby-button">
+                    <span>Save</span>
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <script type="text/javascript">
+        (function () {
+            var pluginId = 'e47faeac-8075-4eae-a9de-c54c3e0064b7';
+            var page = document.querySelector('#SearchAcceleratorConfigPage');
+            var checkboxes = ['Enabled', 'TrustEmptyExternalResults', 'AcceleratePeopleSearch', 'DebugLogging'];
+            var numbers = ['ExternalTimeoutMilliseconds'];
+
+            page.addEventListener('pageshow', function () {
+                Dashboard.showLoadingMsg();
+                ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                    checkboxes.forEach(function (key) { page.querySelector('#' + key).checked = config[key]; });
+                    numbers.forEach(function (key) { page.querySelector('#' + key).value = config[key]; });
+                    Dashboard.hideLoadingMsg();
+                });
+            });
+
+            page.querySelector('#SearchAcceleratorConfigForm').addEventListener('submit', function (event) {
+                event.preventDefault();
+                Dashboard.showLoadingMsg();
+                ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                    checkboxes.forEach(function (key) { config[key] = page.querySelector('#' + key).checked; });
+                    numbers.forEach(function (key) { config[key] = parseInt(page.querySelector('#' + key).value, 10) || 1500; });
+                    ApiClient.updatePluginConfiguration(pluginId, config)
+                        .then(Dashboard.processPluginConfigurationUpdateResult);
+                });
+            });
+        })();
+    </script>
+</div>
+</body>
+</html>

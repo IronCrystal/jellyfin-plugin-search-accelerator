@@ -1,0 +1,11 @@
+[
+  {
+    "guid": "e47faeac-8075-4eae-a9de-c54c3e0064b7",
+    "name": "Search Accelerator",
+    "description": "Answers searches from an external search provider (such as the Meilisearch plugin) without waiting for Jellyfin's own database search, and routes People search through it too. Falls back to Jellyfin's search when the provider is slow, failing, or down.",
+    "overview": "Makes search as fast as your external search provider",
+    "owner": "IronCrystal",
+    "category": "General",
+    "versions": []
+  }
+]

@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>Jellyfin.Plugin.SearchAccelerator</AssemblyName>
+    <RootNamespace>Jellyfin.Plugin.SearchAccelerator</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Optimize>true</Optimize>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Version>1.0.0.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Built against the server version it runs on; a plugin compiled against a newer ABI fails to load. -->
+    <PackageReference Include="Jellyfin.Controller" Version="12.3.0" PrivateAssets="All" ExcludeAssets="runtime" />
+    <PackageReference Include="Jellyfin.Model" Version="12.3.0" PrivateAssets="All" ExcludeAssets="runtime" />
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Configuration\configPage.html" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Jellyfin.Plugin.SearchAccelerator.Tests" />
+    <!-- Lets NSubstitute proxy internal interfaces in the tests. -->
+    <InternalsVisibleTo Include="DynamicProxyGenAssembly2" />
+  </ItemGroup>
+
+</Project>

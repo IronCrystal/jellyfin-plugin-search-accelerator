@@ -1,0 +1,32 @@
+# Build output
+dist/
+src/bin/
+src/obj/
+
+# NuGet
+*.nupkg
+*.snupkg
+.nuget/
+
+# .NET
+project.lock.json
+project.fragment.lock.json
+
+# Visual Studio / Rider
+.vs/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# VS Code
+.vscode/
+
+# macOS
+.DS_Store
+Thumbs.db
+
+# Tests
+tests/bin/
+tests/obj/
