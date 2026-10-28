@@ -46,6 +46,7 @@ public sealed class AcceleratedSearchManager : ISearchManager
     private readonly ExternalProviderHealth _health;
     private IReadOnlyList<ISearchProvider> _providers = Array.Empty<ISearchProvider>();
     private Guid _probeItemId;
+    private int _reportedDown;
 
     /// <param name="externalOnly">Jellyfin's SearchManager, given only the external providers.</param>
     /// <param name="internalOnly">Jellyfin's SearchManager, given only the internal (SQL) providers.</param>
@@ -237,6 +238,7 @@ public sealed class AcceleratedSearchManager : ISearchManager
         if (scope.ResultCount > 0)
         {
             _health.ReportHealthy();
+            ReportUp();
         }
 
         return (value, scope);
@@ -256,7 +258,11 @@ public sealed class AcceleratedSearchManager : ISearchManager
         }
 
         var healthy = await _health.IsHealthyAsync().ConfigureAwait(false);
-        if (!healthy)
+        if (healthy)
+        {
+            ReportUp();
+        }
+        else if (Interlocked.Exchange(ref _reportedDown, 1) == 0)
         {
             _logger.LogWarning("The external search provider isn't finding known items; using Jellyfin's search until it does");
         }
@@ -306,6 +312,14 @@ public sealed class AcceleratedSearchManager : ISearchManager
 
         _probeItemId = item.Id;
         return item.Name;
+    }
+
+    private void ReportUp()
+    {
+        if (Interlocked.Exchange(ref _reportedDown, 0) == 1)
+        {
+            _logger.LogInformation("The external search provider is finding items again; searches no longer wait for Jellyfin's search");
+        }
     }
 
     private void LogPath(PluginConfiguration configuration, string kind, string searchTerm, string path, int count, Stopwatch stopwatch)
