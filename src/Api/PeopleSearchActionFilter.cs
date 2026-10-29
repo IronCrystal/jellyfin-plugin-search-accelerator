@@ -229,7 +229,8 @@ public sealed class PeopleSearchActionFilter : IAsyncActionFilter
                     is null
                     or CollectionTypeOptions.music
                     or CollectionTypeOptions.musicvideos
-                    or CollectionTypeOptions.books);
+                    or CollectionTypeOptions.books
+                    or CollectionTypeOptions.mixed);
                 _libraryCheckedAt = now;
             }
 

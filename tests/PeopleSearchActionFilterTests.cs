@@ -229,6 +229,7 @@ public class PeopleSearchActionFilterTests
     [Theory]
     [InlineData(CollectionTypeOptions.musicvideos)]
     [InlineData(CollectionTypeOptions.books)]
+    [InlineData(CollectionTypeOptions.mixed)]
     [InlineData(null)]
     public async Task WebClientRequest_WithAnotherLibraryThatCreditsArtists_GoesToJellyfin(CollectionTypeOptions? collectionType)
     {
