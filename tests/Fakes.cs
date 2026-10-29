@@ -141,3 +141,22 @@ public sealed class FakeInternalProvider : IInternalSearchProvider
         return Task.FromResult<IReadOnlyList<SearchResult>>(Results.ToArray());
     }
 }
+
+public sealed class ListLogger<T> : Microsoft.Extensions.Logging.ILogger<T>
+{
+    public List<string> Messages { get; } = new();
+
+    public IDisposable? BeginScope<TState>(TState state)
+        where TState : notnull
+        => null;
+
+    public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+
+    public void Log<TState>(
+        Microsoft.Extensions.Logging.LogLevel logLevel,
+        Microsoft.Extensions.Logging.EventId eventId,
+        TState state,
+        Exception? exception,
+        Func<TState, Exception?, string> formatter)
+        => Messages.Add(formatter(state, exception));
+}

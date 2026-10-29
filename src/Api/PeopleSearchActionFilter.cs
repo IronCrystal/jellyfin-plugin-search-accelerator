@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Security.Claims;
 using System.Threading.Tasks;
@@ -36,18 +37,23 @@ public sealed class PeopleSearchActionFilter : IAsyncActionFilter
     private const int DefaultSearchLimit = 100;
     private const int MaxSearchLimit = 1000;
 
+    private static readonly TimeSpan _libraryCheckInterval = TimeSpan.FromMinutes(1);
+
     // Filters the search providers can't apply. Requests using any of them go to Jellyfin.
+    // excludePersonTypes is handled separately: Jellyfin Web sends it on every People search.
     private static readonly string[] _unsupportedArguments =
     {
         "nameStartsWith",
         "nameLessThan",
         "nameStartsWithOrGreater",
         "personTypes",
-        "excludePersonTypes",
         "appearsInItemId",
         "isFavorite",
         "parentId",
     };
+
+    // Jellyfin Web always sends excludePersonTypes=Artist,AlbumArtist.
+    private static readonly string[] _artistPersonTypes = { "Artist", "AlbumArtist" };
 
     private readonly ISearchManager _searchManager;
     private readonly IUserManager _userManager;
@@ -55,6 +61,10 @@ public sealed class PeopleSearchActionFilter : IAsyncActionFilter
     private readonly IDtoService _dtoService;
     private readonly ILogger<PeopleSearchActionFilter> _logger;
     private readonly Func<PluginConfiguration?> _getConfiguration;
+    private readonly TimeProvider _timeProvider;
+    private readonly object _libraryCheckLock = new();
+    private bool _hasArtistCredits;
+    private DateTimeOffset _libraryCheckedAt = DateTimeOffset.MinValue;
 
     public PeopleSearchActionFilter(
         ISearchManager searchManager,
@@ -62,7 +72,7 @@ public sealed class PeopleSearchActionFilter : IAsyncActionFilter
         ILibraryManager libraryManager,
         IDtoService dtoService,
         ILogger<PeopleSearchActionFilter> logger)
-        : this(searchManager, userManager, libraryManager, dtoService, logger, () => Plugin.Instance?.Configuration)
+        : this(searchManager, userManager, libraryManager, dtoService, logger, () => Plugin.Instance?.Configuration, TimeProvider.System)
     {
     }
 
@@ -72,7 +82,8 @@ public sealed class PeopleSearchActionFilter : IAsyncActionFilter
         ILibraryManager libraryManager,
         IDtoService dtoService,
         ILogger<PeopleSearchActionFilter> logger,
-        Func<PluginConfiguration?> getConfiguration)
+        Func<PluginConfiguration?> getConfiguration,
+        TimeProvider timeProvider)
     {
         _searchManager = searchManager;
         _userManager = userManager;
@@ -80,6 +91,7 @@ public sealed class PeopleSearchActionFilter : IAsyncActionFilter
         _dtoService = dtoService;
         _logger = logger;
         _getConfiguration = getConfiguration;
+        _timeProvider = timeProvider;
     }
 
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
@@ -93,8 +105,17 @@ public sealed class PeopleSearchActionFilter : IAsyncActionFilter
             || action.ControllerName != "Persons"
             || action.ActionName != "GetPersons"
             || context.HttpContext.User.Identity?.IsAuthenticated != true
-            || !IsSupported(context.ActionArguments))
+            || GetArgument<string>(context.ActionArguments, "searchTerm") is not { } searchTerm
+            || string.IsNullOrWhiteSpace(searchTerm))
         {
+            await next().ConfigureAwait(false);
+            return;
+        }
+
+        var stopwatch = Stopwatch.StartNew();
+        if (GetUnsupportedReason(context.ActionArguments) is { } unsupported)
+        {
+            LogPassThrough(configuration, searchTerm, unsupported);
             await next().ConfigureAwait(false);
             return;
         }
@@ -103,20 +124,31 @@ public sealed class PeopleSearchActionFilter : IAsyncActionFilter
         var userId = ResolveRequestUserId(context.HttpContext.User, GetValue<Guid>(context.ActionArguments, "userId"));
 
         QueryResult<BaseItemDto>? result;
+        string? reason;
         try
         {
-            result = await TrySearchAsync(context, searchManager, configuration, userId).ConfigureAwait(false);
+            (result, reason) = await TrySearchAsync(context, searchManager, configuration, searchTerm, userId).ConfigureAwait(false);
         }
         catch (Exception ex) when (!context.HttpContext.RequestAborted.IsCancellationRequested)
         {
             _logger.LogError(ex, "People search failed; using Jellyfin's");
-            result = null;
+            (result, reason) = (null, "error");
         }
 
         if (result is null)
         {
+            LogPassThrough(configuration, searchTerm, reason ?? "provider unavailable");
             await next().ConfigureAwait(false);
             return;
+        }
+
+        if (configuration.DebugLogging)
+        {
+            _logger.LogInformation(
+                "People search for '{SearchTerm}' served by external: {Count} results in {Elapsed} ms",
+                searchTerm,
+                result.TotalRecordCount,
+                stopwatch.ElapsedMilliseconds);
         }
 
         context.Result = new OkObjectResult(result);
@@ -143,30 +175,70 @@ public sealed class PeopleSearchActionFilter : IAsyncActionFilter
         return requestedUserId.Value;
     }
 
-    internal static bool IsSupported(IDictionary<string, object?> arguments)
+    /// <returns>Why the provider can't answer this request, or null if it can.</returns>
+    internal string? GetUnsupportedReason(IDictionary<string, object?> arguments)
     {
-        if (GetArgument<string>(arguments, "searchTerm") is not { } searchTerm || string.IsNullOrWhiteSpace(searchTerm))
-        {
-            return false;
-        }
-
         foreach (var name in _unsupportedArguments)
         {
             if (arguments.TryGetValue(name, out var value) && IsSet(value))
             {
-                return false;
+                return $"unsupported parameter {name}";
             }
         }
 
-        return GetArgument<ItemFilter[]>(arguments, "filters") is not { } filters
-            || !filters.Contains(ItemFilter.IsFavorite);
+        if (GetArgument<ItemFilter[]>(arguments, "filters") is { } filters && filters.Contains(ItemFilter.IsFavorite))
+        {
+            return "unsupported parameter filters=IsFavorite";
+        }
+
+        // The provider can't exclude by role. Leaving out Artist and AlbumArtist changes nothing when no one in
+        // the library holds those roles.
+        if (GetArgument<string[]>(arguments, "excludePersonTypes") is { Length: > 0 } excludedTypes)
+        {
+            if (!excludedTypes.All(type => _artistPersonTypes.Contains(type, StringComparer.OrdinalIgnoreCase)))
+            {
+                return "unsupported parameter excludePersonTypes";
+            }
+
+            if (HasArtistCredits())
+            {
+                return "unsupported parameter excludePersonTypes (a library may credit artists)";
+            }
+        }
+
+        return null;
     }
 
-    /// <returns>The response, or null to let Jellyfin answer.</returns>
-    private async Task<QueryResult<BaseItemDto>?> TrySearchAsync(
+    /// <summary>
+    /// Whether any library can hold Artist or AlbumArtist credits. Jellyfin 12.3 creates them for audio files
+    /// (AudioFileProber), music albums, and books (OpfReader), so music, music video, book and mixed-content
+    /// libraries all count. Checked at most once a minute.
+    /// </summary>
+    private bool HasArtistCredits()
+    {
+        lock (_libraryCheckLock)
+        {
+            var now = _timeProvider.GetUtcNow();
+            if (now - _libraryCheckedAt >= _libraryCheckInterval)
+            {
+                _hasArtistCredits = _libraryManager.GetVirtualFolders().Any(folder => folder.CollectionType
+                    is null
+                    or CollectionTypeOptions.music
+                    or CollectionTypeOptions.musicvideos
+                    or CollectionTypeOptions.books);
+                _libraryCheckedAt = now;
+            }
+
+            return _hasArtistCredits;
+        }
+    }
+
+    /// <returns>The response, or null and the reason to let Jellyfin answer.</returns>
+    private async Task<(QueryResult<BaseItemDto>? Result, string? Reason)> TrySearchAsync(
         ActionExecutingContext context,
         AcceleratedSearchManager searchManager,
         PluginConfiguration configuration,
+        string searchTerm,
         Guid userId)
     {
         var arguments = context.ActionArguments;
@@ -175,9 +247,14 @@ public sealed class PeopleSearchActionFilter : IAsyncActionFilter
         // they're credited on, which only Jellyfin's own query checks. Requests without a user (an API key)
         // go to Jellyfin too.
         var user = userId.Equals(Guid.Empty) ? null : _userManager.GetUserById(userId);
-        if (user is null || user.HasContentRestrictions())
+        if (user is null)
         {
-            return null;
+            return (null, "no user");
+        }
+
+        if (user.HasContentRestrictions())
+        {
+            return (null, "restricted user");
         }
 
         var startIndex = Math.Max(0, GetValue<int>(arguments, "startIndex") ?? 0);
@@ -187,7 +264,7 @@ public sealed class PeopleSearchActionFilter : IAsyncActionFilter
         var hits = await searchManager.TryGetExternalResultsAsync(
             new SearchProviderQuery
             {
-                SearchTerm = GetArgument<string>(arguments, "searchTerm")!,
+                SearchTerm = searchTerm,
                 UserId = userId,
                 IncludeItemTypes = new[] { BaseItemKind.Person },
                 Limit = searchLimit,
@@ -196,7 +273,7 @@ public sealed class PeopleSearchActionFilter : IAsyncActionFilter
             context.HttpContext.RequestAborted).ConfigureAwait(false);
         if (hits is null)
         {
-            return null;
+            return (null, "provider unavailable");
         }
 
         var people = hits
@@ -211,7 +288,15 @@ public sealed class PeopleSearchActionFilter : IAsyncActionFilter
             .Select(person => _dtoService.GetItemByNameDto(person, dtoOptions, null, user))
             .ToArray();
 
-        return new QueryResult<BaseItemDto>(startIndex, people.Count, page);
+        return (new QueryResult<BaseItemDto>(startIndex, people.Count, page), null);
+    }
+
+    private void LogPassThrough(PluginConfiguration configuration, string searchTerm, string reason)
+    {
+        if (configuration.DebugLogging)
+        {
+            _logger.LogInformation("People search for '{SearchTerm}' passed to Jellyfin: {Reason}", searchTerm, reason);
+        }
     }
 
     // Same as Jellyfin's DtoExtensions.AddAdditionalDtoOptions.

@@ -15,6 +15,7 @@ using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Net;
 using MediaBrowser.Model.Dto;
+using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.Querying;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -43,6 +44,14 @@ public class PeopleSearchActionFilterTests
     private readonly IDtoService _dtoService = Substitute.For<IDtoService>();
     private readonly PluginConfiguration _configuration = new();
     private readonly FakeJellyfinSearchManager _externalOnly = new();
+    private readonly FakeTimeProvider _time = new();
+    private readonly ListLogger<PeopleSearchActionFilter> _log = new();
+    private readonly List<VirtualFolderInfo> _libraries = new()
+    {
+        new VirtualFolderInfo { Name = "Movies", CollectionType = CollectionTypeOptions.movies },
+        new VirtualFolderInfo { Name = "Shows", CollectionType = CollectionTypeOptions.tvshows },
+    };
+
     private bool _nextCalled;
 
     public PeopleSearchActionFilterTests()
@@ -55,6 +64,7 @@ public class PeopleSearchActionFilterTests
         _libraryManager.GetItemById(_tim.Id).Returns(_tim);
         _dtoService.GetItemByNameDto(Arg.Any<BaseItem>(), Arg.Any<DtoOptions>(), Arg.Any<List<BaseItem>?>(), Arg.Any<User?>())
             .Returns(callInfo => new BaseItemDto { Id = callInfo.Arg<BaseItem>().Id, Name = callInfo.Arg<BaseItem>().Name });
+        _libraryManager.GetVirtualFolders().Returns(_ => _libraries.ToList());
         _external.Results.Add(new SearchResult(_tom.Id, 1f));
         _external.Results.Add(new SearchResult(Guid.NewGuid(), 0.8f)); // in the index but no longer in Jellyfin
         _external.Results.Add(new SearchResult(_tim.Id, 0.5f));
@@ -81,9 +91,21 @@ public class PeopleSearchActionFilterTests
             _userManager,
             _libraryManager,
             _dtoService,
-            NullLogger<PeopleSearchActionFilter>.Instance,
-            () => _configuration);
+            _log,
+            () => _configuration,
+            _time);
     }
+
+    // Exactly what Jellyfin Web sends for the People row of a search.
+    private Dictionary<string, object?> WebClientRequest(string searchTerm = "t") => new()
+    {
+        ["limit"] = 100,
+        ["searchTerm"] = searchTerm,
+        ["fields"] = new[] { ItemFields.PrimaryImageAspectRatio, ItemFields.CanDelete, ItemFields.MediaSourceCount },
+        ["imageTypeLimit"] = 1,
+        ["excludePersonTypes"] = new[] { "Artist", "AlbumArtist" },
+        ["userId"] = _alice.Id,
+    };
 
     private static ClaimsPrincipal Principal(User user, bool isAdministrator = false)
         => new(new ClaimsIdentity(
@@ -163,6 +185,7 @@ public class PeopleSearchActionFilterTests
         { "nameStartsWithOrGreater", "T" },
         { "personTypes", new[] { "Actor" } },
         { "excludePersonTypes", new[] { "Director" } },
+        { "excludePersonTypes", new[] { "Artist", "Director" } },
         { "appearsInItemId", Guid.NewGuid() },
         { "isFavorite", false },
         { "parentId", Guid.NewGuid() },
@@ -178,6 +201,105 @@ public class PeopleSearchActionFilterTests
         Assert.True(_nextCalled);
         Assert.Null(context.Result);
         Assert.Empty(_external.Queries);
+    }
+
+    [Fact]
+    public async Task WebClientRequest_WithoutMusicLibraries_IsAnsweredFromTheProvider()
+    {
+        var context = await RunAsync(WebClientRequest());
+
+        Assert.False(_nextCalled);
+        Assert.Equal(new[] { "Tom Hanks", "Tim Allen" }, Response(context).Items.Select(dto => dto.Name));
+        Assert.Equal(new[] { BaseItemKind.Person }, Assert.Single(_external.Queries).IncludeItemTypes);
+    }
+
+    [Fact]
+    public async Task WebClientRequest_WithAMusicLibrary_GoesToJellyfin()
+    {
+        _libraries.Add(new VirtualFolderInfo { Name = "Music", CollectionType = CollectionTypeOptions.music });
+
+        var context = await RunAsync(WebClientRequest());
+
+        Assert.True(_nextCalled);
+        Assert.Null(context.Result);
+        Assert.Empty(_external.Queries);
+    }
+
+    // Jellyfin also credits artists on music videos, on audio files in mixed-content libraries, and on books.
+    [Theory]
+    [InlineData(CollectionTypeOptions.musicvideos)]
+    [InlineData(CollectionTypeOptions.books)]
+    [InlineData(null)]
+    public async Task WebClientRequest_WithAnotherLibraryThatCreditsArtists_GoesToJellyfin(CollectionTypeOptions? collectionType)
+    {
+        _libraries.Add(new VirtualFolderInfo { Name = "Other", CollectionType = collectionType });
+
+        await RunAsync(WebClientRequest());
+
+        Assert.True(_nextCalled);
+    }
+
+    [Fact]
+    public async Task ExcludedArtistTypes_AreMatchedIgnoringCase()
+    {
+        var request = WebClientRequest();
+        request["excludePersonTypes"] = new[] { "artist", "ALBUMARTIST" };
+
+        await RunAsync(request);
+
+        Assert.False(_nextCalled);
+    }
+
+    [Fact]
+    public async Task LibraryCheck_IsCachedForAMinute()
+    {
+        var filter = CreateFilter();
+        await RunAsync(WebClientRequest(), filter: filter);
+
+        _libraries.Add(new VirtualFolderInfo { Name = "Music", CollectionType = CollectionTypeOptions.music });
+        await RunAsync(WebClientRequest(), filter: filter);
+        Assert.False(_nextCalled);
+        _libraryManager.Received(1).GetVirtualFolders();
+
+        _time.Advance(TimeSpan.FromSeconds(61));
+        await RunAsync(WebClientRequest(), filter: filter);
+        Assert.True(_nextCalled);
+    }
+
+    [Fact]
+    public async Task DebugLogging_SaysWhoServedEachSearch()
+    {
+        _configuration.DebugLogging = true;
+
+        await RunAsync(WebClientRequest("tom"));
+        await RunAsync(new() { ["searchTerm"] = "tim", ["nameStartsWith"] = "T" });
+        _alice.SetPermission(PermissionKind.EnableAllFolders, false);
+        await RunAsync(new() { ["searchTerm"] = "kid" });
+
+        Assert.Equal(3, _log.Messages.Count);
+        Assert.Matches(@"^People search for 'tom' served by external: 2 results in \d+ ms$", _log.Messages[0]);
+        Assert.Equal("People search for 'tim' passed to Jellyfin: unsupported parameter nameStartsWith", _log.Messages[1]);
+        Assert.Equal("People search for 'kid' passed to Jellyfin: restricted user", _log.Messages[2]);
+    }
+
+    [Fact]
+    public async Task DebugLogging_ReportsAnUnavailableProvider()
+    {
+        _configuration.DebugLogging = true;
+        _external.CanSearchQueries = false;
+
+        await RunAsync(WebClientRequest("tom"));
+
+        Assert.Equal("People search for 'tom' passed to Jellyfin: provider unavailable", Assert.Single(_log.Messages));
+    }
+
+    [Fact]
+    public async Task WithoutDebugLogging_NothingIsLogged()
+    {
+        await RunAsync(WebClientRequest());
+        await RunAsync(new() { ["searchTerm"] = "t", ["nameStartsWith"] = "T" });
+
+        Assert.Empty(_log.Messages);
     }
 
     [Fact]
