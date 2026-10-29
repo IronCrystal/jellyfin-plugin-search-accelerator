@@ -13,5 +13,17 @@ public class PluginConfiguration : BasePluginConfiguration
 
     public bool AcceleratePeopleSearch { get; set; } = true;
 
+    // Which People search users with library, parental-rating or tag restrictions get.
+    public RestrictedUserPeopleSearch RestrictedUserPeopleSearch { get; set; } = RestrictedUserPeopleSearch.Skip;
+
     public bool DebugLogging { get; set; }
+}
+
+public enum RestrictedUserPeopleSearch
+{
+    // No people results; fast.
+    Skip,
+
+    // Jellyfin's own People search, which checks what the user may see; slow but complete.
+    UseJellyfin,
 }

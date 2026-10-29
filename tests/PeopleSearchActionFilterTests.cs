@@ -275,11 +275,14 @@ public class PeopleSearchActionFilterTests
         await RunAsync(new() { ["searchTerm"] = "tim", ["nameStartsWith"] = "T" });
         _alice.SetPermission(PermissionKind.EnableAllFolders, false);
         await RunAsync(new() { ["searchTerm"] = "kid" });
+        _configuration.RestrictedUserPeopleSearch = RestrictedUserPeopleSearch.UseJellyfin;
+        await RunAsync(new() { ["searchTerm"] = "kid2" });
 
-        Assert.Equal(3, _log.Messages.Count);
+        Assert.Equal(4, _log.Messages.Count);
         Assert.Matches(@"^People search for 'tom' served by external: 2 results in \d+ ms$", _log.Messages[0]);
         Assert.Equal("People search for 'tim' passed to Jellyfin: unsupported parameter nameStartsWith", _log.Messages[1]);
-        Assert.Equal("People search for 'kid' passed to Jellyfin: restricted user", _log.Messages[2]);
+        Assert.Equal("People search for 'kid' skipped: restricted user", _log.Messages[2]);
+        Assert.Equal("People search for 'kid2' passed to Jellyfin: restricted user", _log.Messages[3]);
     }
 
     [Fact]
@@ -327,22 +330,63 @@ public class PeopleSearchActionFilterTests
     }
 
     [Fact]
-    public async Task RestrictedUser_GoesToJellyfin()
+    public async Task RestrictedUser_WithSkip_GetsNoPeopleAndJellyfinIsNotAsked()
     {
         _alice.SetPermission(PermissionKind.EnableAllFolders, false);
 
-        await RunAsync(new() { ["searchTerm"] = "t" });
+        var context = await RunAsync(new() { ["searchTerm"] = "t", ["startIndex"] = 20, ["limit"] = 10 });
 
-        Assert.True(_nextCalled);
+        Assert.False(_nextCalled);
+        var response = Response(context);
+        Assert.Empty(response.Items);
+        Assert.Equal(0, response.TotalRecordCount);
+        Assert.Equal(20, response.StartIndex);
         Assert.Empty(_external.Queries);
     }
 
     [Fact]
-    public async Task ParentalRatingLimit_GoesToJellyfin()
+    public async Task ParentalRatingLimit_WithSkip_GetsNoPeople()
     {
         _alice.MaxParentalRatingScore = 10;
 
-        await RunAsync(new() { ["searchTerm"] = "t" });
+        var context = await RunAsync(WebClientRequest());
+
+        Assert.False(_nextCalled);
+        Assert.Empty(Response(context).Items);
+    }
+
+    [Fact]
+    public async Task RestrictedUser_WithUseJellyfin_GoesToJellyfin()
+    {
+        _configuration.RestrictedUserPeopleSearch = RestrictedUserPeopleSearch.UseJellyfin;
+        _alice.SetPermission(PermissionKind.EnableAllFolders, false);
+
+        var context = await RunAsync(WebClientRequest());
+
+        Assert.True(_nextCalled);
+        Assert.Null(context.Result);
+        Assert.Empty(_external.Queries);
+    }
+
+    [Theory]
+    [InlineData(RestrictedUserPeopleSearch.Skip)]
+    [InlineData(RestrictedUserPeopleSearch.UseJellyfin)]
+    public async Task UnrestrictedUser_IsAnsweredFromTheProviderWhateverTheSetting(RestrictedUserPeopleSearch setting)
+    {
+        _configuration.RestrictedUserPeopleSearch = setting;
+
+        var context = await RunAsync(WebClientRequest());
+
+        Assert.False(_nextCalled);
+        Assert.Equal(2, Response(context).TotalRecordCount);
+    }
+
+    [Fact]
+    public async Task RestrictedUser_WithUnsupportedParameters_StillGoesToJellyfin()
+    {
+        _alice.SetPermission(PermissionKind.EnableAllFolders, false);
+
+        await RunAsync(new() { ["searchTerm"] = "t", ["appearsInItemId"] = Guid.NewGuid() });
 
         Assert.True(_nextCalled);
     }

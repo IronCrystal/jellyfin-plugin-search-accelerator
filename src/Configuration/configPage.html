@@ -6,7 +6,7 @@
 </head>
 <body>
 <div id="SearchAcceleratorConfigPage" data-role="page" class="page type-interior pluginConfigurationPage"
-     data-require="emby-input,emby-button,emby-checkbox">
+     data-require="emby-input,emby-button,emby-checkbox,emby-select">
     <div data-role="content">
         <div class="content-primary">
             <form id="SearchAcceleratorConfigForm">
@@ -57,8 +57,21 @@
                             <span>Search people with the external provider</span>
                         </label>
                         <div class="fieldDescription checkboxFieldDescription">
-                            Jellyfin's People search never uses search providers. When on, it does. Users with library or
-                            parental restrictions keep Jellyfin's own People search, which checks what they're allowed to see.
+                            Jellyfin's People search never uses search providers. When on, it does, for users without library,
+                            parental-rating or tag restrictions.
+                        </div>
+                    </div>
+
+                    <div class="selectContainer">
+                        <select is="emby-select" id="RestrictedUserPeopleSearch" label="People search for users with restrictions">
+                            <option value="Skip">Skip (fast)</option>
+                            <option value="UseJellyfin">Use Jellyfin's (slow, complete)</option>
+                        </select>
+                        <div class="fieldDescription">
+                            Which people a user with restrictions may see depends on the titles each person is credited on, which
+                            only Jellyfin's own, slow People search checks. "Skip" shows these users no People results. Movies and
+                            shows featuring the person still appear in their search results, because the Meilisearch plugin
+                            indexes cast and crew.
                         </div>
                     </div>
                 </fieldset>
@@ -91,12 +104,14 @@
             var page = document.querySelector('#SearchAcceleratorConfigPage');
             var checkboxes = ['Enabled', 'TrustEmptyExternalResults', 'AcceleratePeopleSearch', 'DebugLogging'];
             var numbers = ['ExternalTimeoutMilliseconds'];
+            var selects = ['RestrictedUserPeopleSearch'];
 
             page.addEventListener('pageshow', function () {
                 Dashboard.showLoadingMsg();
                 ApiClient.getPluginConfiguration(pluginId).then(function (config) {
                     checkboxes.forEach(function (key) { page.querySelector('#' + key).checked = config[key]; });
                     numbers.forEach(function (key) { page.querySelector('#' + key).value = config[key]; });
+                    selects.forEach(function (key) { page.querySelector('#' + key).value = config[key]; });
                     Dashboard.hideLoadingMsg();
                 });
             });
@@ -107,6 +122,7 @@
                 ApiClient.getPluginConfiguration(pluginId).then(function (config) {
                     checkboxes.forEach(function (key) { config[key] = page.querySelector('#' + key).checked; });
                     numbers.forEach(function (key) { config[key] = parseInt(page.querySelector('#' + key).value, 10) || 1500; });
+                    selects.forEach(function (key) { config[key] = page.querySelector('#' + key).value; });
                     ApiClient.updatePluginConfiguration(pluginId, config)
                         .then(Dashboard.processPluginConfigurationUpdateResult);
                 });

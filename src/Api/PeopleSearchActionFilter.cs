@@ -142,7 +142,11 @@ public sealed class PeopleSearchActionFilter : IAsyncActionFilter
             return;
         }
 
-        if (configuration.DebugLogging)
+        if (configuration.DebugLogging && reason is not null)
+        {
+            _logger.LogInformation("People search for '{SearchTerm}' skipped: {Reason}", searchTerm, reason);
+        }
+        else if (configuration.DebugLogging)
         {
             _logger.LogInformation(
                 "People search for '{SearchTerm}' served by external: {Count} results in {Elapsed} ms",
@@ -233,7 +237,9 @@ public sealed class PeopleSearchActionFilter : IAsyncActionFilter
         }
     }
 
-    /// <returns>The response, or null and the reason to let Jellyfin answer.</returns>
+    /// <returns>
+    /// The response, or null and the reason to let Jellyfin answer. A response with a reason is a skipped search.
+    /// </returns>
     private async Task<(QueryResult<BaseItemDto>? Result, string? Reason)> TrySearchAsync(
         ActionExecutingContext context,
         AcceleratedSearchManager searchManager,
@@ -252,12 +258,16 @@ public sealed class PeopleSearchActionFilter : IAsyncActionFilter
             return (null, "no user");
         }
 
+        var startIndex = Math.Max(0, GetValue<int>(arguments, "startIndex") ?? 0);
         if (user.HasContentRestrictions())
         {
-            return (null, "restricted user");
+            // Jellyfin's own query for these users is the slow one this plugin exists to avoid. The titles they
+            // appear in are still found by the Movies and Shows searches, since the provider indexes cast and crew.
+            return configuration.RestrictedUserPeopleSearch == RestrictedUserPeopleSearch.Skip
+                ? (new QueryResult<BaseItemDto>(startIndex, 0, Array.Empty<BaseItemDto>()), "restricted user")
+                : (null, "restricted user");
         }
 
-        var startIndex = Math.Max(0, GetValue<int>(arguments, "startIndex") ?? 0);
         var limit = GetValue<int>(arguments, "limit") is { } requestedLimit && requestedLimit > 0 ? requestedLimit : (int?)null;
         var searchLimit = Math.Min(MaxSearchLimit, startIndex + (limit ?? DefaultSearchLimit));
 

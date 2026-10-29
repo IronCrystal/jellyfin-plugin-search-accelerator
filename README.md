@@ -54,9 +54,15 @@ every 5 seconds.
 
 Answered by the provider unless the request also filters by anything the provider can't apply (`nameStartsWith`,
 `nameLessThan`, `nameStartsWithOrGreater`, `personTypes`, `appearsInItemId`, `isFavorite` or the `IsFavorite` filter,
-`parentId`), or the user has library, parental-rating or tag restrictions. People aren't owned by a library; which of them
-a restricted user may see depends on the items they're credited on, and only Jellyfin's own query checks that. Those
-requests go to Jellyfin unchanged.
+`parentId`); those requests go to Jellyfin unchanged.
+
+Users with library, parental-rating or tag restrictions are a special case. People aren't owned by a library; which of
+them a restricted user may see depends on the titles they're credited on, and only Jellyfin's own, slow query checks that.
+The **People search for users with restrictions** setting decides what these users get:
+
+- **Skip (fast)**, the default: no People results. Movies and shows featuring the person still appear in their search
+  results, because the Meilisearch plugin indexes cast and crew.
+- **Use Jellyfin's (slow, complete)**: Jellyfin's own People search.
 
 Jellyfin Web always sends `excludePersonTypes=Artist,AlbumArtist` with People searches. The provider can't filter by role,
 so that request is only answered by the provider when no library can hold Artist or AlbumArtist credits: no music,
@@ -71,6 +77,7 @@ music video, book or mixed-content library (Jellyfin credits artists on audio fi
 | Trust "no results" from the external provider | on | An empty answer from a healthy provider is final. Turn off if the index is often out of date. |
 | External provider timeout (ms) | 1500 | Slower answers fall back to Jellyfin's search. |
 | Search people with the external provider | on | See above. |
+| People search for users with restrictions | Skip (fast) | Skip, or use Jellyfin's slow People search. See above. |
 | Log every search | off | Logs which search answered each query, with timings, and why a People search went to Jellyfin. |
 
 ## Security
@@ -108,7 +115,7 @@ limited to one library):
 - Searches that find nothing are about 4× faster (35 ms → 9 ms); the others are the same or faster. This library is far
   smaller than a real one, so the absolute gains are much smaller than on a large server.
 - People searches sent exactly as Jellyfin Web sends them are answered by the provider, and go to Jellyfin once a music
-  library is added.
+  library is added. A restricted user gets an empty People list with "Skip" and Jellyfin's full list with "Use Jellyfin's".
 - 401 without a login, 403 for another user's results, and nothing from libraries the user can't open.
 - With Meilisearch stopped, searches fall back to Jellyfin's search and still find results; when it comes back, the plugin
   switches back within seconds.
